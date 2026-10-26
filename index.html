@@ -290,7 +290,7 @@ function errMsg(e,fallback){const m=(e&&(e.message||e.error_description))||"";fo
 /* ---------- state ---------- */
 let session=null,uid=null,isAdmin=false,loaded=false,loadFailed=false;
 let listings=[],cfg={rate:2.5,sham_acct:"",sham_name:"",delivery:15000,kitchen_open:true,kitchen_note:"",about:"",feature_fee:2};
-let myOrderDoc=[],allOrders=[],profile={},profiles={},ratings={},myRatings={},coupons=[];
+let myOrderDoc=[],allOrders=[],profile={},profiles={},ratings={},myRatings={},coupons=[],admins=[];
 let mode="user",tab="shop",sec="food",cat="all",q="",sort="new",favOnly=false,aFilter="wait",lFilter="pending";
 let cart=ls.get("dk-cart",{}),favs=ls.get("dk-favs",[]);
 let editing=null,checkout=null,coupon=null,afterLogin=null;
@@ -326,8 +326,9 @@ async function loadMine(){
 }
 async function loadAdmin(){
   if(!isAdmin)return;
-  const [O,P,K]=await Promise.all([sb.from("orders").select("*").order("created_at",{ascending:false}).limit(1000),
-    sb.from("profiles").select("*").limit(5000),sb.from("coupons").select("*").order("created_at",{ascending:false})]);
+  const [O,P,K,A]=await Promise.all([sb.from("orders").select("*").order("created_at",{ascending:false}).limit(1000),
+    sb.from("profiles").select("*").limit(5000),sb.from("coupons").select("*").order("created_at",{ascending:false}),sb.rpc("list_admins")]);
+  admins=A.data||[];
   allOrders=(O.data||[]).map(o=>({...mapO(o),doc:o.id}));
   profiles={};(P.data||[]).forEach(p=>profiles[p.id]={name:p.name,phone:p.phone,shamAcct:p.sham_acct});
   coupons=(K.data||[]).map(c=>({id:c.code,pct:+c.pct,active:c.active,until:c.until||""}));
@@ -775,6 +776,9 @@ $("view").addEventListener("click",async e=>{
   else if(d.avail){const l=listings.find(x=>x.id===d.avail);dbDo(sb.from("listings").update({avail:l.avail===false}).eq("id",l.id))}
   else if("newfood" in d)openListForm("food",null);
   else if(d.feat){const l=listings.find(x=>x.id===d.feat);dbDo(sb.from("listings").update({featured:!l.featured,feature_req:false}).eq("id",l.id),l.featured?"انشال التمييز":"صار مميز")}
+  else if(d.unadmin){
+    if(t.dataset.confirm!=="1"){t.dataset.confirm="1";t.textContent="متأكد؟";setTimeout(()=>{if(t.isConnected){t.dataset.confirm="";t.textContent="شيل الصلاحية"}},3000);return}
+    const {error}=await sb.rpc("set_admin",{target_email:d.unadmin,make:false});toast(error?"ما زبط":"انشالت صلاحية المدير");await refresh();render()}
   else if(d.cdel)dbDo(sb.from("coupons").delete().eq("code",d.cdel),"انحذف الكوبون","ما انحذف");
   else if(d.ctog){const c=coupons.find(x=>x.id===d.ctog);dbDo(sb.from("coupons").update({active:c.active===false}).eq("code",c.id))}
 });
@@ -830,11 +834,31 @@ function vASettings(v){
     <div class="actions"><button class="btn-primary">أضف كوبون</button></div>
   </form>
   <div class="list" style="margin-top:12px;max-width:640px">${coupons.length?coupons.map(c=>`<div class="item"><div class="top"><div><h3 dir="ltr" style="text-align:right">${esc(c.id)}</h3><span class="meta">خصم ${(c.pct||0).toLocaleString("ar-SY")}% على الأكل${c.until?" · لغاية "+esc(c.until):""}</span></div>${c.active===false?'<span class="pill st-off">موقوف</span>':'<span class="pill st-live">فعّال</span>'}</div>
-    <div class="btns"><button class="btn-quiet btn-sm" data-ctog="${esc(c.id)}">${c.active===false?"فعّله":"وقّفه"}</button><button class="btn-danger btn-sm" data-cdel="${esc(c.id)}">حذف</button></div></div>`).join(""):`<p class="note">ما في كوبونات لسا.</p>`}</div>`;
+    <div class="btns"><button class="btn-quiet btn-sm" data-ctog="${esc(c.id)}">${c.active===false?"فعّله":"وقّفه"}</button><button class="btn-danger btn-sm" data-cdel="${esc(c.id)}">حذف</button></div></div>`).join(""):`<p class="note">ما في كوبونات لسا.</p>`}</div>
+  <h2 class="v" style="margin-top:28px">المدراء</h2><p class="sub">افتح حساب مدير جديد بإيميل وكلمة سر من عندك، وأعطيهن لصاحب الحساب. المدير بيشوف كل الطلبات والإعدادات.</p>
+  <form class="card-form" id="admForm">
+    <div class="row"><label>الاسم<input id="adName" maxlength="40" required></label><label>الإيميل<input id="adEmail" type="email" required dir="ltr" autocomplete="off"></label></div>
+    <div class="row"><label>كلمة السر (6 أحرف أو أكتر)<input id="adPass" type="text" minlength="6" required dir="ltr" autocomplete="new-password"></label><div></div></div>
+    <p class="note" style="margin:0">إذا الإيميل عنده حساب من قبل، بيصير مدير وبتضل كلمة سرّه نفسها.</p>
+    <div class="actions"><button class="btn-primary" id="adGo">أضف مدير</button></div>
+  </form>
+  <div class="list" style="margin-top:12px;max-width:640px">${admins.length?admins.map(a=>`<div class="item"><div class="top"><div><h3>${esc(a.name||"مدير")}</h3><span class="meta" dir="ltr">${esc(a.email)}</span></div>
+    ${a.id===uid?'<span class="pill st-live">انت</span>':`<button class="btn-danger btn-sm" data-unadmin="${esc(a.email)}">شيل الصلاحية</button>`}</div></div>`).join(""):`<p class="note">ما قدرنا نجيب قائمة المدراء.</p>`}</div>`;
   $("setForm").onsubmit=e=>{e.preventDefault();
     dbDo(sb.from("config").update({sham_acct:$("sAcct").value.trim(),sham_name:$("sName").value.trim(),rate:Math.min(30,Math.max(0,Number($("sRate").value)||0)),
       delivery:Math.max(0,Number($("sDel").value)||0),kitchen_open:$("sOpen").checked,kitchen_note:$("sNote").value.trim(),about:$("sAbout").value.trim(),
       feature_fee:Math.max(0,Number($("sFeat").value)||0)}).eq("id",1),"انحفظت الإعدادات","ما انحفظت الإعدادات")};
+  $("admForm").onsubmit=async e=>{e.preventDefault();const btn=$("adGo");btn.disabled=true;
+    const email=$("adEmail").value.trim().toLowerCase(),password=$("adPass").value,name=$("adName").value.trim();
+    try{
+      const tmp=supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false,storageKey:"dk-tmp"}});
+      const r=await tmp.auth.signUp({email,password,options:{data:{name}}});
+      if(r.error&&!/already registered/i.test(r.error.message))throw r.error;
+      const {error}=await sb.rpc("set_admin",{target_email:email,make:true});if(error)throw error;
+      toast("صار "+email+" مدير");await refresh();render();
+    }catch(err){console.error(err);const m=(err&&err.message)||"";
+      toast(/Password should/i.test(m)?"كلمة السر لازم تكون 6 أحرف أو أكتر":/valid email|invalid/i.test(m)?"الإيميل مو صحيح":/rate limit|security purposes/i.test(m)?"استنى دقيقة وجرّب مرة تانية":"ما زبط، جرّب مرة تانية")}
+    btn.disabled=false};
   $("cpnForm").onsubmit=e=>{e.preventDefault();const code=$("cCode").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");const pct=Number($("cPct").value);
     if(code.length<2||!(pct>0&&pct<=90)){toast("اكتب كود بالإنكليزي ونسبة بين 1 و90");return}
     dbDo(sb.from("coupons").insert({code,pct,until:$("cUntil").value||null}),"انضاف الكوبون "+code,"ما انضاف الكوبون، يمكن الكود موجود")};
